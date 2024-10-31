@@ -14,13 +14,13 @@ CREATE INDEX IF NOT EXISTS nostr_votes_fetch_time ON nostr_votes(fetch_time);
 CREATE TABLE IF NOT EXISTS nostr_relays (
     relay_url TEXT NOT NULL PRIMARY KEY
 );
-INSERT INTO nostr_relays (relay_url) VALUES ('wss://relay.damus.io'),
-                                            ('wss://nostr.bitcoiner.social/'),
-                                            ('wss://relay.nostr.info/'),
-                                            ('wss://nostr-01.bolt.observer/'),
-                                            ('wss://nostr.mutinywallet.com/'),
-                                            ('wss://relay.snort.social/'),
-                                            ('wss://relay.primal.net/'),
-                                            ('wss://relay.satoshidnc.com/'),
-                                            ('wss://nos.lol/'),
-                                            ('wss://nostr-pub.wellorder.net/') ON CONFLICT DO NOTHING;
+-- INSERT INTO nostr_relays (relay_url) VALUES ('wss://relay.damus.io'),
+--                                             ('wss://nostr.bitcoiner.social/'),
+--                                             ('wss://relay.nostr.info/'),
+--                                             ('wss://nostr-01.bolt.observer/'),
+--                                             ('wss://nostr.mutinywallet.com/'),
+--                                             ('wss://relay.snort.social/'),
+--                                             ('wss://relay.primal.net/'),
+--                                             ('wss://relay.satoshidnc.com/'),
+--                                             ('wss://nos.lol/'),
+--                                             ('wss://nostr-pub.wellorder.net/') ON CONFLICT DO NOTHING;

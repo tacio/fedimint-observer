@@ -26,6 +26,7 @@ use fmo_api_types::{FederationActivity, FederationSummary, FederationUtxo, Fedim
 use futures::future::join_all;
 use futures::StreamExt;
 use postgres_from_row::FromRow;
+use stability_pool_common::{StabilityPoolConsensusItem, StabilityPoolInput, StabilityPoolOutput};
 use tokio::time::sleep;
 use tokio_postgres::NoTls;
 use tracing::log::info;
@@ -709,6 +710,18 @@ impl FederationObserver {
                         * 1000;
                     (Some(amount_msat), None)
                 }
+                "stability_pool" => {
+                    let amount_msat = input
+                        .as_any()
+                        .downcast_ref::<StabilityPoolInput>()
+                        .expect("Not Stability Pool input")
+                        .maybe_v0_ref()
+                        .expect("Not v0")
+                        .amount
+                        .msats;
+
+                    (Some(amount_msat), None)
+                }
                 _ => (None, None),
             };
 
@@ -725,35 +738,64 @@ impl FederationObserver {
             )
             .await?;
 
-            if kind.as_str() == "wallet" {
-                let peg_in_proof = &input
-                    .as_any()
-                    .downcast_ref::<WalletInput>()
-                    .expect("Not Wallet input")
-                    .maybe_v0_ref()
-                    .expect("Not v0")
-                    .0;
+            match kind.as_str() {
+                "wallet" => {
+                    let peg_in_proof = &input
+                        .as_any()
+                        .downcast_ref::<WalletInput>()
+                        .expect("Not Wallet input")
+                        .maybe_v0_ref()
+                        .expect("Not v0")
+                        .0;
 
-                let outpoint = peg_in_proof.outpoint();
+                    let outpoint = peg_in_proof.outpoint();
 
-                let address = bitcoin::Address::from_script(
-                    bitcoin::Script::from_bytes(peg_in_proof.tx_output().script_pubkey.as_bytes()),
-                    bitcoin::Network::Bitcoin,
-                )
-                .expect("Invalid output address");
+                    let address = bitcoin::Address::from_script(
+                        bitcoin::Script::from_bytes(
+                            peg_in_proof.tx_output().script_pubkey.as_bytes(),
+                        ),
+                        bitcoin::Network::Bitcoin,
+                    )
+                    .expect("Invalid output address");
 
-                dbtx.execute(
-                        "INSERT INTO wallet_peg_ins VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING",
-                        &[
-                            &outpoint.txid[..].to_owned(),
-                            &(outpoint.vout as i32),
-                            &address.to_string(),
-                            &maybe_amount_msat.map(|amt| amt as i64).expect("Wallet input must have amount"),
-                            &federation_id.consensus_encode_to_vec(),
-                            &fedimint_txid.consensus_encode_to_vec(),
-                            &(in_idx as i32),
-                        ]
-                    ).await?;
+                    dbtx.execute(
+                            "INSERT INTO wallet_peg_ins VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING",
+                            &[
+                                &outpoint.txid[..].to_owned(),
+                                &(outpoint.vout as i32),
+                                &address.to_string(),
+                                &maybe_amount_msat.map(|amt| amt as i64).expect("Wallet input must have amount"),
+                                &federation_id.consensus_encode_to_vec(),
+                                &fedimint_txid.consensus_encode_to_vec(),
+                                &(in_idx as i32),
+                            ]
+                        ).await?;
+                }
+                "stability_pool" => match &input.as_any().downcast_ref::<StabilityPoolInput>() {
+                    Some(tx_input) => {
+                        let json_input = serde_json::to_value(tx_input)
+                            .expect("Should be able to serialize the transaction input to JSON");
+                        debug!("Found stability-pool tx input: {json_input:?}");
+
+                        dbtx.execute(
+                            "INSERT INTO transaction_input_details VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+                            &[
+                                &federation_id.consensus_encode_to_vec(),
+                                &fedimint_txid.consensus_encode_to_vec(),
+                                &(in_idx as i32),
+                                &kind,
+                                &json_input,
+                            ],
+                        )
+                        .await?;
+                    }
+                    None => {
+                        warn!("could not downcast (check decoders registry). {input:?}")
+                    }
+                },
+                other => {
+                    debug!("Transaction input of kind {other}. Not implemented.")
+                }
             }
         }
 
@@ -826,6 +868,7 @@ impl FederationObserver {
                         * 1000;
                     (Some(amount_msat), None)
                 }
+                // TODO: get amount for stability_pool for each IntendedAction
                 _ => (None, None),
             };
 
@@ -843,49 +886,76 @@ impl FederationObserver {
             )
             .await?;
 
-            if kind.as_str() == "wallet" {
-                let wallet_v0_output = output
-                    .as_any()
-                    .downcast_ref::<WalletOutput>()
-                    .expect("Not Wallet input")
-                    .maybe_v0_ref()
-                    .expect("Not v0");
+            match kind.as_str() {
+                "wallet" => {
+                    let wallet_v0_output = output
+                        .as_any()
+                        .downcast_ref::<WalletOutput>()
+                        .expect("Not Wallet input")
+                        .maybe_v0_ref()
+                        .expect("Not v0");
 
-                match wallet_v0_output {
-                    WalletOutputV0::PegOut(peg_out) => {
-                        let withdrawal_address = peg_out.recipient.clone().assume_checked();
+                    match wallet_v0_output {
+                        WalletOutputV0::PegOut(peg_out) => {
+                            let withdrawal_address = peg_out.recipient.clone().assume_checked();
+                            dbtx.execute(
+                                "INSERT INTO wallet_withdrawal_addresses VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+                                &[
+                                    &withdrawal_address.to_string(),
+                                    &federation_id.consensus_encode_to_vec(),
+                                    &(session_index as i32),
+                                    &(item_index as i32),
+                                    &fedimint_txid.consensus_encode_to_vec(),
+                                    &(out_idx as i32),
+                                ]
+                            ).await?;
+                        }
+                        WalletOutputV0::Rbf(_) => {
+                            // panic, since the benefits may outweigh the annoyance of removing and
+                            // restarting
+                            panic!(
+                                r#"
+                                You've discovered a terribly unfortunate situation: an RBF wallet output
+
+                                Federation ID: {}
+                                Name: {}
+
+                                If you know any of the guardians of the federation, please give them a heads up
+                                that they should expect failures re-syncing, or worse. They can reach out to the
+                                core dev team on Discord (chat.fedimint.org).
+
+                                For more context, see: https://github.com/fedimint/fedimint/pull/5496
+                            "#,
+                                federation_id,
+                                config.global.federation_name().unwrap_or("no name defined"),
+                            );
+                        }
+                    }
+                }
+                "stability_pool" => match &output.as_any().downcast_ref::<StabilityPoolOutput>() {
+                    Some(tx_output) => {
+                        let json_output = serde_json::to_value(tx_output)
+                            .expect("Should be able to serialize the transaction output to JSON");
+                        debug!("found stability-pool tx output: {json_output:?}");
+
                         dbtx.execute(
-                            "INSERT INTO wallet_withdrawal_addresses VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
-                            &[
-                                &withdrawal_address.to_string(),
-                                &federation_id.consensus_encode_to_vec(),
-                                &(session_index as i32),
-                                &(item_index as i32),
-                                &fedimint_txid.consensus_encode_to_vec(),
-                                &(out_idx as i32),
-                            ]
-                        ).await?;
+                                            "INSERT INTO transaction_output_details VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+                                            &[
+                                                &federation_id.consensus_encode_to_vec(),
+                                                &fedimint_txid.consensus_encode_to_vec(),
+                                                &(out_idx as i32),
+                                                &kind,
+                                                &json_output,
+                                            ],
+                                        )
+                                        .await?;
                     }
-                    WalletOutputV0::Rbf(_) => {
-                        // panic, since the benefits may outweigh the annoyance of removing and
-                        // restarting
-                        panic!(
-                            r#"
-                            You've discovered a terribly unfortunate situation: an RBF wallet output
-
-                            Federation ID: {}
-                            Name: {}
-
-                            If you know any of the guardians of the federation, please give them a heads up
-                            that they should expect failures re-syncing, or worse. They can reach out to the
-                            core dev team on Discord (chat.fedimint.org).
-
-                            For more context, see: https://github.com/fedimint/fedimint/pull/5496
-                        "#,
-                            federation_id,
-                            config.global.federation_name().unwrap_or("no name defined"),
-                        );
+                    None => {
+                        warn!("could not downcast (check decoders registry). {output:?}")
                     }
+                },
+                other => {
+                    debug!("Transaction output of kind {other}. Not implemented")
                 }
             }
         }
@@ -904,170 +974,195 @@ impl FederationObserver {
     ) -> Result<(), tokio_postgres::Error> {
         let kind = instance_to_kind(config, ci.module_instance_id());
 
-        if kind != "wallet" {
-            return Ok(());
-        }
-
-        let wallet_ci = ci
-            .as_any()
-            .downcast_ref::<WalletConsensusItem>()
-            .expect("config says this should be a wallet CI");
-        match wallet_ci {
-            WalletConsensusItem::BlockCount(height_vote) => {
-                dbtx.execute(
-                    "INSERT INTO block_height_votes VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
-                    &[
-                        &federation_id.consensus_encode_to_vec(),
-                        &(session_index as i32),
-                        &(item_index as i32),
-                        &(peer_id.to_usize() as i32),
-                        &(*height_vote as i32),
-                    ],
-                )
-                .await?;
-            }
-            WalletConsensusItem::PegOutSignature(peg_out_sig) => {
-                let peg_out_txid = peg_out_sig.txid.to_string();
-                let peg_out_txid_encoded =
-                    fedimint_core::TransactionId::from_str(peg_out_txid.as_str())
-                        .expect("Invalid on chain txid")
-                        .consensus_encode_to_vec();
-
-                dbtx.execute(
-                    "INSERT INTO wallet_withdrawal_transactions VALUES ($1, $2) ON CONFLICT DO NOTHING",
-                    &[
-                        &peg_out_txid_encoded,
-                        &federation_id.consensus_encode_to_vec(),
-                    ],
-                )
-                .await?;
-
-                dbtx.execute(
-                    "INSERT INTO wallet_withdrawal_signatures VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
-                    &[
-                        &peg_out_txid_encoded,
-                        &(session_index as i32),
-                        &(item_index as i32),
-                        &(peer_id.to_usize() as i32),
-                    ],
-                )
-                .await?;
-
-                let num_sigs = dbtx
-                    .query_one(
-                        "
-                        SELECT COUNT(peer_id)::INT num_sigs
-                        FROM wallet_withdrawal_signatures
-                        WHERE on_chain_txid = $1
-                        GROUP BY on_chain_txid
-                        ",
-                        &[&peg_out_txid_encoded],
-                    )
-                    .await?
-                    .get::<_, i32>("num_sigs") as usize;
-
-                // 3n + 1 <= num_peers
-                // n <= (num_peers - 1) / 3
-                // threshold = num_peers - floor((num_peers - 1) / 3)
-                let threshold = {
-                    let num_peers = config.global.api_endpoints.len();
-                    num_peers - (num_peers - 1) / 3
-                };
-
-                if num_sigs < threshold {
-                    return Ok(());
-                }
-
-                // at this point, the transaction reached threshold and should broadcast
-
-                let esplora_txid = esplora_client::Txid::from_str(peg_out_txid.as_str())
-                    .expect("Couldn't create esplora txid");
-
-                let builder = esplora_client::Builder::new("https://mempool.space/api");
-                let client = builder
-                    .build_async()
-                    .expect("Failed to build esplora client");
-
-                let fetched_tx = retry(
-                    "fetching tx from esplora".to_string(),
-                    FibonacciBuilder::default()
-                        .with_min_delay(Duration::from_secs(30))
-                        .with_max_delay(Duration::from_secs(60 * 30))
-                        .with_max_times(usize::MAX),
-                    || async {
-                        client.get_tx_no_opt(&esplora_txid).await.map_err(|e| {
-                            warn!("failed to fetch tx: {e:?}");
-                            anyhow::anyhow!("failed fetching tx from esplora")
-                        })
-                    },
-                )
-                .await
-                .expect("Reached usize::MAX retries");
-
-                for input in fetched_tx.input {
-                    let prev_out_txid = fedimint_core::TransactionId::from_str(
-                        input.previous_output.txid.to_string().as_str(),
-                    )
-                    .expect("Invalid txid")
-                    .consensus_encode_to_vec();
-
-                    dbtx.execute(
-                        "INSERT INTO wallet_withdrawal_transaction_inputs VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-                        &[
-                            &prev_out_txid,
-                            &(input.previous_output.vout as i32),
-                            &peg_out_txid_encoded,
-                        ],
-                    )
-                    .await?;
-                }
-
-                for (out_idx, output) in fetched_tx.output.iter().enumerate() {
-                    let address = bitcoin::Address::from_script(
-                        bitcoin::Script::from_bytes(output.script_pubkey.as_bytes()),
-                        bitcoin::Network::Bitcoin,
-                    )
-                    .expect("Invalid bitcoin address");
-
-                    dbtx.execute(
-                        "INSERT INTO wallet_withdrawal_transaction_outputs VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
-                        &[
-                            &peg_out_txid_encoded,
-                            &(out_idx as i32),
-                            &address.to_string(),
-                            &((output.value.to_sat() as i64) * 1000),
-
-                        ],
-                    )
-                    .await?;
-
-                    // update federation_txid if we found a matching withdrawal address
-                    dbtx.execute(
-                        "
-                        UPDATE wallet_withdrawal_transactions
-                        SET federation_txid = (
-                            SELECT txid
-                            FROM wallet_withdrawal_addresses wwa
-                            WHERE address = $1
-                              AND NOT EXISTS (
-                                SELECT *
-                                FROM wallet_withdrawal_transactions wwt
-                                WHERE wwa.txid = wwt.federation_txid
-                              )
-                            -- if address reuse, assume earliest withdrawal request first
-                            ORDER BY session_index, item_index
-                            LIMIT 1
+        match kind.as_str() {
+            "wallet" => {
+                let wallet_ci = ci
+                    .as_any()
+                    .downcast_ref::<WalletConsensusItem>()
+                    .expect("config says this should be a wallet CI");
+                match wallet_ci {
+                    WalletConsensusItem::BlockCount(height_vote) => {
+                        dbtx.execute(
+                            "INSERT INTO block_height_votes VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+                            &[
+                                &federation_id.consensus_encode_to_vec(),
+                                &(session_index as i32),
+                                &(item_index as i32),
+                                &(peer_id.to_usize() as i32),
+                                &(*height_vote as i32),
+                            ],
                         )
-                        WHERE on_chain_txid = $2
-                          AND federation_txid IS NULL
-                        ",
-                        &[&address.to_string(), &peg_out_txid_encoded],
+                        .await?;
+                    }
+                    WalletConsensusItem::PegOutSignature(peg_out_sig) => {
+                        let peg_out_txid = peg_out_sig.txid.to_string();
+                        let peg_out_txid_encoded =
+                            fedimint_core::TransactionId::from_str(peg_out_txid.as_str())
+                                .expect("Invalid on chain txid")
+                                .consensus_encode_to_vec();
+
+                        dbtx.execute(
+                            "INSERT INTO wallet_withdrawal_transactions VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                            &[
+                                &peg_out_txid_encoded,
+                                &federation_id.consensus_encode_to_vec(),
+                            ],
+                        )
+                        .await?;
+
+                        dbtx.execute(
+                            "INSERT INTO wallet_withdrawal_signatures VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+                            &[
+                                &peg_out_txid_encoded,
+                                &(session_index as i32),
+                                &(item_index as i32),
+                                &(peer_id.to_usize() as i32),
+                            ],
+                        )
+                        .await?;
+
+                        let num_sigs =
+                            dbtx.query_one(
+                                "
+                                SELECT COUNT(peer_id)::INT num_sigs
+                                FROM wallet_withdrawal_signatures
+                                WHERE on_chain_txid = $1
+                                GROUP BY on_chain_txid
+                                ",
+                                &[&peg_out_txid_encoded],
+                            )
+                            .await?
+                            .get::<_, i32>("num_sigs") as usize;
+
+                        // 3n + 1 <= num_peers
+                        // n <= (num_peers - 1) / 3
+                        // threshold = num_peers - floor((num_peers - 1) / 3)
+                        let threshold = {
+                            let num_peers = config.global.api_endpoints.len();
+                            num_peers - (num_peers - 1) / 3
+                        };
+
+                        if num_sigs < threshold {
+                            return Ok(());
+                        }
+
+                        // at this point, the transaction reached threshold and should broadcast
+
+                        let esplora_txid = esplora_client::Txid::from_str(peg_out_txid.as_str())
+                            .expect("Couldn't create esplora txid");
+
+                        let builder = esplora_client::Builder::new("https://mempool.space/api");
+                        let client = builder
+                            .build_async()
+                            .expect("Failed to build esplora client");
+
+                        let fetched_tx = retry(
+                            "fetching tx from esplora".to_string(),
+                            FibonacciBuilder::default()
+                                .with_min_delay(Duration::from_secs(30))
+                                .with_max_delay(Duration::from_secs(60 * 30))
+                                .with_max_times(usize::MAX),
+                            || async {
+                                client.get_tx_no_opt(&esplora_txid).await.map_err(|e| {
+                                    warn!("failed to fetch tx: {e:?}");
+                                    anyhow::anyhow!("failed fetching tx from esplora")
+                                })
+                            },
+                        )
+                        .await
+                        .expect("Reached usize::MAX retries");
+
+                        for input in fetched_tx.input {
+                            let prev_out_txid = fedimint_core::TransactionId::from_str(
+                                input.previous_output.txid.to_string().as_str(),
+                            )
+                            .expect("Invalid txid")
+                            .consensus_encode_to_vec();
+
+                            dbtx.execute(
+                                "INSERT INTO wallet_withdrawal_transaction_inputs VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                                &[
+                                    &prev_out_txid,
+                                    &(input.previous_output.vout as i32),
+                                    &peg_out_txid_encoded,
+                                ],
+                            )
+                            .await?;
+                        }
+
+                        for (out_idx, output) in fetched_tx.output.iter().enumerate() {
+                            let address = bitcoin::Address::from_script(
+                                bitcoin::Script::from_bytes(output.script_pubkey.as_bytes()),
+                                bitcoin::Network::Bitcoin,
+                            )
+                            .expect("Invalid bitcoin address");
+
+                            dbtx.execute(
+                                "INSERT INTO wallet_withdrawal_transaction_outputs VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+                                &[
+                                    &peg_out_txid_encoded,
+                                    &(out_idx as i32),
+                                    &address.to_string(),
+                                    &((output.value.to_sat() as i64) * 1000),
+
+                                ],
+                            )
+                            .await?;
+
+                            // update federation_txid if we found a matching withdrawal address
+                            dbtx.execute(
+                                "
+                                UPDATE wallet_withdrawal_transactions
+                                SET federation_txid = (
+                                    SELECT txid
+                                    FROM wallet_withdrawal_addresses wwa
+                                    WHERE address = $1
+                                      AND NOT EXISTS (
+                                        SELECT *
+                                        FROM wallet_withdrawal_transactions wwt
+                                        WHERE wwa.txid = wwt.federation_txid
+                                      )
+                                    -- if address reuse, assume earliest withdrawal request first
+                                    ORDER BY session_index, item_index
+                                    LIMIT 1
+                                )
+                                WHERE on_chain_txid = $2
+                                  AND federation_txid IS NULL
+                                ",
+                                &[&address.to_string(), &peg_out_txid_encoded],
+                            )
+                            .await?;
+                        }
+                    }
+                    _ => {
+                        // other WalletConsesnsusItems are not needed yet
+                    }
+                }
+            }
+            "stability_pool" => match ci.as_any().downcast_ref::<StabilityPoolConsensusItem>() {
+                Some(ci) => {
+                    let json_ci = serde_json::to_value(ci)
+                        .expect("Should be able to serialize the CI to JSON");
+                    debug!("found stability-pool CI: {json_ci:?}");
+
+                    dbtx.execute(
+                        "INSERT INTO consensus_items VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+                        &[
+                            &federation_id.consensus_encode_to_vec(),
+                            &(session_index as i32),
+                            &(item_index as i32),
+                            &kind,
+                            &json_ci,
+                        ],
                     )
                     .await?;
                 }
-            }
-            _ => {
-                // other WalletConsesnsusItems are not needed yet
+                None => {
+                    warn!("could not downcast (check decoders registry). {ci:?}")
+                }
+            },
+            other => {
+                debug!("Consensus Item of kind {other}. Not implemented.")
             }
         }
 

@@ -1,9 +1,5 @@
 [workspace]
-members = [
-    "fmo_api_types",
-    "fmo_frontend",
-    "fmo_server",
-]
+members = ["fmo_api_types", "fmo_frontend", "fmo_server"]
 
 resolver = "2"
 
