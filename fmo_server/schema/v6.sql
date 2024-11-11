@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS consensus_items
     federation_id BYTEA   NOT NULL REFERENCES federations (federation_id),
     session_index INTEGER NOT NULL,
     item_index    INTEGER NOT NULL,
+    proposer      INTEGER NOT NULL,
     kind          TEXT NOT NULL,
     data          JSONB   NOT NULL,
     FOREIGN KEY (federation_id, session_index) REFERENCES sessions (federation_id, session_index),

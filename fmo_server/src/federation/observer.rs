@@ -26,7 +26,9 @@ use fmo_api_types::{FederationActivity, FederationSummary, FederationUtxo, Fedim
 use futures::future::join_all;
 use futures::StreamExt;
 use postgres_from_row::FromRow;
-use stability_pool_common::{StabilityPoolConsensusItem, StabilityPoolInput, StabilityPoolOutput};
+use stability_pool_common::{
+    StabilityPoolConsensusItem, StabilityPoolInput, StabilityPoolOutput, StabilityPoolOutputV0,
+};
 use tokio::time::sleep;
 use tokio_postgres::NoTls;
 use tracing::log::info;
@@ -588,7 +590,7 @@ impl FederationObserver {
             if elapsed >= Duration::from_secs(5) {
                 let sessions_synced = session_index - last_session;
                 let rate = (sessions_synced as f64) / elapsed.as_secs_f64();
-                info!("Synced up to session {session_index}, processed {sessions_synced} sessions at a rate of {rate:.2} sessions/s");
+                info!("Synced {federation_id} up to session {session_index}, processed {sessions_synced} sessions at a rate of {rate:.2} sessions/s");
                 timer = SystemTime::now();
                 last_session = session_index;
             }
@@ -806,7 +808,7 @@ impl FederationObserver {
                     let ln_output = output
                         .as_any()
                         .downcast_ref::<LightningOutput>()
-                        .expect("Not LN input")
+                        .expect("Not LN output")
                         .maybe_v0_ref()
                         .expect("Not v0");
                     let (maybe_amount_msat, ln_contract_interaction_kind, contract_id) =
@@ -849,7 +851,7 @@ impl FederationObserver {
                     let amount_msat = output
                         .as_any()
                         .downcast_ref::<MintOutput>()
-                        .expect("Not Mint input")
+                        .expect("Not Mint output")
                         .maybe_v0_ref()
                         .expect("Not v0")
                         .amount
@@ -860,7 +862,7 @@ impl FederationObserver {
                     let amount_msat = output
                         .as_any()
                         .downcast_ref::<WalletOutput>()
-                        .expect("Not Wallet input")
+                        .expect("Not Wallet output")
                         .maybe_v0_ref()
                         .expect("Not v0")
                         .amount()
@@ -868,7 +870,22 @@ impl FederationObserver {
                         * 1000;
                     (Some(amount_msat), None)
                 }
-                // TODO: get amount for stability_pool for each IntendedAction
+                /*
+                "stability_pool" => {
+                    let stability_pool_output = output
+                        .as_any()
+                        .downcast_ref::<StabilityPoolOutput>()
+                        .expect("Not Stability Pool output")
+                        .maybe_v0_ref()
+                        .expect("Not v0");
+
+                    let maybe_amount_msat =
+                        match stability_pool_output {
+                            StabilityPoolOutputV0::IntendedAction::Provide(provide) => {
+                                provide.amount
+                            }
+                }
+                */
                 _ => (None, None),
             };
 
@@ -1146,11 +1163,12 @@ impl FederationObserver {
                     debug!("found stability-pool CI: {json_ci:?}");
 
                     dbtx.execute(
-                        "INSERT INTO consensus_items VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+                        "INSERT INTO consensus_items VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
                         &[
                             &federation_id.consensus_encode_to_vec(),
                             &(session_index as i32),
                             &(item_index as i32),
+                            &(peer_id.to_usize() as i32),
                             &kind,
                             &json_ci,
                         ],
