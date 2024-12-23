@@ -19,7 +19,9 @@ use fedimint_core::util::backon::{ConstantBuilder, FibonacciBuilder};
 use fedimint_core::util::retry;
 use fedimint_core::{Amount, PeerId};
 use fedimint_ln_common::contracts::{Contract, IdentifiableContract};
-use fedimint_ln_common::{LightningInput, LightningOutput, LightningOutputV0};
+use fedimint_ln_common::{
+    LightningConsensusItem, LightningInput, LightningOutput, LightningOutputV0,
+};
 use fedimint_mint_common::{MintInput, MintOutput};
 use fedimint_wallet_common::{WalletConsensusItem, WalletInput, WalletOutput, WalletOutputV0};
 use fmo_api_types::{FederationActivity, FederationSummary, FederationUtxo, FedimintTotals};
@@ -795,6 +797,28 @@ impl FederationObserver {
                         warn!("could not downcast (check decoders registry). {input:?}")
                     }
                 },
+                "ln" => match &input.as_any().downcast_ref::<LightningInput>() {
+                    Some(tx_input) => {
+                        let json_input = serde_json::to_value(tx_input)
+                            .expect("Should be able to serialize the transaction input to JSON");
+                        debug!("Found lightning gateway tx input: {json_input:?}");
+
+                        dbtx.execute(
+                            "INSERT INTO transaction_input_details VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+                            &[
+                                &federation_id.consensus_encode_to_vec(),
+                                &fedimint_txid.consensus_encode_to_vec(),
+                                &(in_idx as i32),
+                                &kind,
+                                &json_input,
+                            ],
+                        )
+                        .await?;
+                    }
+                    None => {
+                        warn!("could not downcast (check decoders registry). {input:?}")
+                    }
+                },
                 other => {
                     debug!("Transaction input of kind {other}. Not implemented.")
                 }
@@ -954,6 +978,28 @@ impl FederationObserver {
                         let json_output = serde_json::to_value(tx_output)
                             .expect("Should be able to serialize the transaction output to JSON");
                         debug!("found stability-pool tx output: {json_output:?}");
+
+                        dbtx.execute(
+                                            "INSERT INTO transaction_output_details VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+                                            &[
+                                                &federation_id.consensus_encode_to_vec(),
+                                                &fedimint_txid.consensus_encode_to_vec(),
+                                                &(out_idx as i32),
+                                                &kind,
+                                                &json_output,
+                                            ],
+                                        )
+                                        .await?;
+                    }
+                    None => {
+                        warn!("could not downcast (check decoders registry). {output:?}")
+                    }
+                },
+                "ln" => match &output.as_any().downcast_ref::<LightningOutput>() {
+                    Some(tx_output) => {
+                        let json_output = serde_json::to_value(tx_output)
+                            .expect("Should be able to serialize the transaction output to JSON");
+                        debug!("found lightning gateway tx output: {json_output:?}");
 
                         dbtx.execute(
                                             "INSERT INTO transaction_output_details VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
@@ -1161,6 +1207,29 @@ impl FederationObserver {
                     let json_ci = serde_json::to_value(ci)
                         .expect("Should be able to serialize the CI to JSON");
                     debug!("found stability-pool CI: {json_ci:?}");
+
+                    dbtx.execute(
+                        "INSERT INTO consensus_items VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+                        &[
+                            &federation_id.consensus_encode_to_vec(),
+                            &(session_index as i32),
+                            &(item_index as i32),
+                            &(peer_id.to_usize() as i32),
+                            &kind,
+                            &json_ci,
+                        ],
+                    )
+                    .await?;
+                }
+                None => {
+                    warn!("could not downcast (check decoders registry). {ci:?}")
+                }
+            },
+            "ln" => match ci.as_any().downcast_ref::<LightningConsensusItem>() {
+                Some(ci) => {
+                    let json_ci = serde_json::to_value(ci)
+                        .expect("Should be able to serialize the CI to JSON");
+                    debug!("found lightning gateway CI: {json_ci:?}");
 
                     dbtx.execute(
                         "INSERT INTO consensus_items VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
