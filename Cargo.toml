@@ -1,9 +1,5 @@
 [workspace]
-members = [
-    "fmo_api_types",
-    "fmo_frontend",
-    "fmo_server",
-]
+members = ["fmo_api_types", "fmo_frontend", "fmo_server"]
 
 resolver = "2"
 
@@ -13,3 +9,4 @@ fedimint-core = { version = "0.4", git = "https://github.com/elsirion/fedimint",
 fedimint-ln-common = { version = "0.4", git = "https://github.com/elsirion/fedimint", branch = "v0.4.4-patch-xyz" }
 fedimint-mint-common = { version = "0.4", git = "https://github.com/elsirion/fedimint", branch = "v0.4.4-patch-xyz" }
 fedimint-wallet-common = { version = "0.4", git = "https://github.com/elsirion/fedimint", branch = "v0.4.4-patch-xyz" }
+stability-pool-common = { git = "https://github.com/tacio/fedi", branch = "fmo-compatible" }
