@@ -46,7 +46,7 @@ use tracing::{debug, error, info_span, warn, Instrument};
 
 use crate::federation::db::{Federation, FederationV0};
 use crate::federation::{db, decoders_from_config, instance_to_kind};
-use crate::util::{execute, query, query_one, query_opt, query_value};
+use crate::util::{cleanup_peer_url, execute, query, query_one, query_opt, query_value};
 
 type BackfillFn = for<'a> fn(
     &'a FederationObserver,
@@ -390,7 +390,7 @@ impl FederationObserver {
                     .first_key_value()
                     .expect("At least one peer");
                 let invite = InviteCode::new(
-                    first_peer_url.url.clone(),
+                    cleanup_peer_url(&first_peer_url.url.clone()),
                     *first_peer_id,
                     federation.federation_id,
                     None,
@@ -592,7 +592,7 @@ impl FederationObserver {
                 .global
                 .api_endpoints
                 .iter()
-                .map(|(&peer_id, peer_url)| (peer_id, peer_url.url.clone())),
+                .map(|(&peer_id, peer_url)| (peer_id, cleanup_peer_url(&peer_url.url.clone()))),
             &None,
         )
         .await?;
