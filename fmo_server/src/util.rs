@@ -10,8 +10,10 @@ use fedimint_wallet_common::WalletCommonInit;
 use hex::ToHex;
 use postgres_from_row::FromRow;
 use serde_json::json;
-#[cfg(feature = "stability_pool_v1")]
+#[cfg(feature = "stability_pool")]
 use stability_pool_common::StabilityPoolCommonGen;
+#[cfg(feature = "stability_pool")]
+use stability_pool_common_old::StabilityPoolCommonGen as StabilityPoolCommonGenOld;
 
 pub fn config_to_json(cfg: ClientConfig) -> anyhow::Result<JsonClientConfig> {
     let decoders = get_decoders(
@@ -65,8 +67,10 @@ pub fn get_decoders(
                 "ln" => LightningCommonInit::decoder(),
                 "wallet" => WalletCommonInit::decoder(),
                 "mint" => MintCommonInit::decoder(),
-                #[cfg(feature = "stability_pool_v1")]
-                "stability_pool" => StabilityPoolCommonGen::decoder(),
+                #[cfg(feature = "stability_pool")]
+                "stability_pool" => StabilityPoolCommonGenOld::decoder(),
+                #[cfg(feature = "stability_pool")]
+                "multi_sig_stability_pool" => StabilityPoolCommonGen::decoder(),
                 _ => {
                     return None;
                 }

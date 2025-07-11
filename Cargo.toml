@@ -1,15 +1,11 @@
 [workspace]
-members = [
-    "fmo_api_types",
-    "fmo_frontend",
-    "fmo_server",
-]
+members = ["fmo_api_types", "fmo_frontend", "fmo_server"]
 
 resolver = "2"
 
 [workspace.dependencies]
-fedimint-api-client = { version = "0.7" } # TODO: apply XYZ patch
-fedimint-core = { version = "0.7" }
-fedimint-ln-common = { version = "0.7" }
-fedimint-mint-common = { version = "0.7" }
-fedimint-wallet-common = { version = "0.7" }
+fedimint-core = { git = "https://github.com/fedibtc/fedimint", tag = "v0.7.0-fedi2" }
+fedimint-api-client = { git = "https://github.com/fedibtc/fedimint", tag = "v0.7.0-fedi2" }
+fedimint-ln-common = { git = "https://github.com/fedibtc/fedimint", tag = "v0.7.0-fedi2" }
+fedimint-mint-common = { git = "https://github.com/fedibtc/fedimint", tag = "v0.7.0-fedi2" }
+fedimint-wallet-common = { git = "https://github.com/fedibtc/fedimint", tag = "v0.7.0-fedi2" }
